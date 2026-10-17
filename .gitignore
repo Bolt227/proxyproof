@@ -1,0 +1,12 @@
+﻿node_modules/
+server/*.db
+server/*.db-wal
+server/*.db-shm
+.env
+app/build/
+app/.dart_tool/
+app/.flutter-plugins*
+app/.packages
+app/android/.gradle/
+app/android/local.properties
+app/pubspec.lock

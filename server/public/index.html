@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ProxyProof Dashboard</title>
+<style>
+  :root{--bg:#0f1220;--card:#181c30;--line:#2a3050;--txt:#e8ebff;--mut:#8f97c2;--acc:#6c8cff;--ok:#3ddc97;--bad:#ff6b6b;--warn:#ffb84d}
+  *{box-sizing:border-box} body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--txt)}
+  header{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--line)}
+  header h1{font-size:17px;margin:0;flex:1} nav button{margin-right:6px}
+  button,select,input{font:inherit;border-radius:8px;border:1px solid var(--line);background:#20253f;color:var(--txt);padding:7px 12px}
+  button{cursor:pointer} button:hover{border-color:var(--acc)} button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+  button.danger{color:var(--bad)} button.on{background:#262d52;border-color:var(--acc)}
+  main{display:grid;grid-template-columns:300px 1fr;gap:16px;padding:16px 20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .item{padding:10px;border-radius:8px;cursor:pointer;border:1px solid transparent} .item:hover{background:#20253f} .item.sel{border-color:var(--acc);background:#20253f}
+  .item small{display:block;color:var(--mut)} .muted{color:var(--mut)}
+  table{width:100%;border-collapse:collapse} th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line)} th{color:var(--mut);font-weight:500}
+  .badge{padding:2px 8px;border-radius:99px;font-size:12px} .active{background:#1d3b33;color:var(--ok)} .closed{background:#3a2530;color:var(--bad)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .big{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+  #login{max-width:340px;margin:12vh auto} #login input{width:100%;margin-bottom:10px}
+  .err{color:var(--bad);margin:6px 0} .hidden{display:none!important}
+  @media(max-width:800px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="login" class="card hidden">
+  <h2 style="margin-top:0">ProxyProof</h2>
+  <input id="email" placeholder="Organiser / admin email" autocomplete="username">
+  <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+  <div id="loginErr" class="err"></div>
+  <button class="primary" id="loginBtn" style="width:100%">Sign in</button>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>ProxyProof &middot; Live Attendance</h1>
+    <nav>
+      <button data-tab="sessions" class="on">Sessions</button>
+      <button data-tab="students">Students</button>
+      <button data-tab="devices" id="devTab" class="hidden">Device requests</button>
+    </nav>
+    <span class="muted" id="who"></span><button id="logout">Log out</button>
+  </header>
+
+  <main id="tab-sessions">
+    <div class="card"><b>Sessions</b><p class="muted" style="margin:4px 0 10px">Start a session from the organiser app.</p><div id="sessList"></div></div>
+    <div class="card" id="detail"><p class="muted">Select a session to see attendance live.</p></div>
+  </main>
+
+  <main id="tab-students" class="hidden" style="grid-template-columns:1fr">
+    <div class="card">
+      <div class="row"><b style="flex:1">Attendance summary (closed sessions)</b><button id="expSummary">Export CSV</button></div>
+      <table><thead><tr><th>Roll No</th><th>Name</th><th>Present</th><th>Held</th><th>%</th></tr></thead><tbody id="sumBody"></tbody></table>
+    </div>
+  </main>
+
+  <main id="tab-devices" class="hidden" style="grid-template-columns:1fr">
+    <div class="card"><b>Pending device-change requests</b>
+      <table><thead><tr><th>Student</th><th>Roll No</th><th>Email</th><th>Requested</th><th></th></tr></thead><tbody id="devBody"></tbody></table>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = (t) => (t ? new Date(t * 1000).toLocaleString() : '');
+const clock = (t) => (t ? new Date(t * 1000).toLocaleTimeString() : '');
+let jwt = localStorage.jwt, me = JSON.parse(localStorage.me || 'null'), cur = null, es = null, tick = null, detail = null;
+
+async function api(path, opts = {}) {
+  const r = await fetch('/api' + path, {
+    method: opts.method || 'GET',
+    headers: { 'Content-Type': 'application/json', ...(jwt ? { Authorization: 'Bearer ' + jwt } : {}) },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (r.status === 401 && jwt) { localStorage.clear(); location.reload(); return new Promise(() => {}); } // expired login
+  if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || r.statusText); }
+  return (r.headers.get('content-type') || '').includes('text/csv') ? r.blob() : r.json();
+}
+async function download(path, name) {
+  const b = await api(path); const a = document.createElement('a');
+  a.href = URL.createObjectURL(b); a.download = name; a.click(); URL.revokeObjectURL(a.href);
+}
+
+function show() {
+  const ok = jwt && me && ['organiser', 'admin'].includes(me.role);
+  $('#login').classList.toggle('hidden', !!ok); $('#app').classList.toggle('hidden', !ok);
+  if (!ok) return;
+  $('#who').textContent = `${me.name} (${me.role})`;
+  $('#devTab').classList.toggle('hidden', me.role !== 'admin');
+  loadSessions();
+}
+$('#loginBtn').onclick = async () => {
+  try {
+    const d = await api('/auth/login', { method: 'POST', body: { email: $('#email').value, password: $('#password').value } });
+    if (!['organiser', 'admin'].includes(d.user.role)) throw new Error('Students use the mobile app');
+    jwt = d.token; me = d.user; localStorage.jwt = jwt; localStorage.me = JSON.stringify(me); $('#loginErr').textContent = ''; show();
+  } catch (e) { $('#loginErr').textContent = e.message; }
+};
+$('#logout').onclick = () => { localStorage.clear(); jwt = me = null; if (es) es.close(); show(); };
+
+document.querySelectorAll('nav button').forEach((b) => (b.onclick = () => {
+  document.querySelectorAll('nav button').forEach((x) => x.classList.toggle('on', x === b));
+  ['sessions', 'students', 'devices'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== b.dataset.tab));
+  if (b.dataset.tab === 'students') loadSummary();
+  if (b.dataset.tab === 'devices') loadDevices();
+}));
+
+// ---------- sessions ----------
+async function loadSessions() {
+  const list = await api('/sessions');
+  $('#sessList').innerHTML = list.map((s) => `<div class="item ${cur === s.id ? 'sel' : ''}" data-id="${s.id}">
+    <b>${esc(s.title)}</b> <span class="badge ${s.status}">${s.status}</span>
+    <small>${fmt(s.startedAt)} &middot; ${s.present} present</small></div>`).join('') || '<p class="muted">No sessions yet.</p>';
+  if (cur === null && list.length) openSession(list[0].id);
+}
+$('#sessList').onclick = (e) => { const it = e.target.closest('.item'); if (it) openSession(Number(it.dataset.id)); };
+
+function openSession(id) {
+  cur = id; if (es) es.close();
+  es = new EventSource(`/api/sessions/${id}/stream?t=${jwt}`);
+  es.onmessage = () => { loadDetail(); loadSessions(); };
+  loadDetail(); loadSessions();
+}
+
+async function loadDetail() {
+  if (cur === null) return;
+  detail = await api('/sessions/' + cur);
+  const d = detail, presentIds = new Set(d.present.map((p) => p.studentId));
+  const absent = d.students.filter((s) => !presentIds.has(s.id));
+  $('#detail').innerHTML = `
+    <div class="row"><h2 style="margin:0;flex:1">${esc(d.title)} <span class="badge ${d.status}">${d.status}</span></h2>
+      <span class="muted" id="left"></span>
+      ${d.status === 'active' ? '<button class="danger" id="closeBtn">Close session</button>' : ''}
+      <button id="expBtn">Export CSV</button></div>
+    <div class="row"><div class="big">${d.present.length}</div><div class="muted">of ${d.students.length} students present</div></div>
+    <div class="row"><select id="addSel"><option value="">Add student manually&hellip;</option>
+      ${absent.map((s) => `<option value="${s.id}">${esc(s.rollNo || '')} ${esc(s.name)}</option>`).join('')}</select>
+      <button id="addBtn">Add</button></div>
+    <table><thead><tr><th>Roll No</th><th>Name</th><th>Time</th><th>Method</th><th>RSSI</th><th></th></tr></thead><tbody>
+      ${d.present.map((p) => `<tr><td>${esc(p.rollNo)}</td><td>${esc(p.name)}</td><td>${clock(p.markedAt)}</td>
+        <td>${p.method}</td><td>${p.rssi ?? ''}</td><td><button class="danger" data-rm="${p.studentId}">Remove</button></td></tr>`).join('')
+        || '<tr><td colspan="6" class="muted">Nobody yet.</td></tr>'}
+    </tbody></table>
+    ${d.attempts.length ? `<h3>Rejected attempts</h3><table><tbody>${d.attempts.map((a) =>
+      `<tr><td>${clock(a.at)}</td><td>${esc(a.name || '?')} ${esc(a.rollNo || '')}</td><td style="color:var(--warn)">${esc(a.reason)}</td><td>${a.rssi ?? ''}</td></tr>`).join('')}</tbody></table>` : ''}`;
+  if ($('#closeBtn')) $('#closeBtn').onclick = async () => { await api(`/sessions/${cur}/close`, { method: 'POST' }); };
+  $('#expBtn').onclick = () => download(`/sessions/${cur}/export.csv`, `session-${cur}.csv`);
+  $('#addBtn').onclick = async () => { const v = $('#addSel').value; if (v) await api(`/sessions/${cur}/attendance`, { method: 'POST', body: { studentId: Number(v) } }); };
+  $('#detail').querySelectorAll('[data-rm]').forEach((b) => (b.onclick = () => api(`/sessions/${cur}/attendance/${b.dataset.rm}`, { method: 'DELETE' })));
+  clearInterval(tick);
+  const upd = () => {
+    const el = $('#left'); if (!el) return;
+    const s = Math.max(0, d.endsAt - Math.floor(Date.now() / 1000));
+    el.textContent = d.status === 'active' ? `Ends in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : '';
+    if (d.status === 'active' && s === 0) { clearInterval(tick); setTimeout(loadDetail, 6000); }
+  };
+  upd(); tick = setInterval(upd, 1000);
+}
+
+// ---------- students summary ----------
+async function loadSummary() {
+  const rows = await api('/summary');
+  $('#sumBody').innerHTML = rows.map((r) => `<tr><td>${esc(r.rollNo)}</td><td>${esc(r.name)}</td><td>${r.present}</td><td>${r.total}</td><td>${r.percentage}%</td></tr>`).join('');
+}
+$('#expSummary').onclick = () => download('/export/summary.csv', 'attendance-summary.csv');
+
+// ---------- device requests (admin) ----------
+async function loadDevices() {
+  const rows = await api('/admin/device-requests');
+  $('#devBody').innerHTML = rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.rollNo)}</td><td>${esc(r.email)}</td><td>${fmt(r.createdAt)}</td>
+    <td><button class="primary" data-a="approve" data-id="${r.id}">Approve</button> <button class="danger" data-a="reject" data-id="${r.id}">Reject</button></td></tr>`).join('')
+    || '<tr><td colspan="5" class="muted">No pending requests.</td></tr>';
+}
+$('#devBody').onclick = async (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  try { await api(`/admin/device-requests/${b.dataset.id}/${b.dataset.a}`, { method: 'POST' }); } catch (x) { alert(x.message); }
+  loadDevices();
+};
+
+show();
+</script>
+</body>
+</html>

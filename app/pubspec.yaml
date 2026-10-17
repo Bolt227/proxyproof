@@ -1,0 +1,26 @@
+name: proxyproof
+description: BLE proximity attendance with rotating tokens.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  shared_preferences: ^2.3.2
+  flutter_blue_plus: ^1.32.12      # student: BLE scanning (stay on 1.x: 2.x adds a licence requirement)
+  flutter_ble_peripheral: ^3.1.0   # organiser: BLE advertising
+  permission_handler: ^11.3.1
+  android_id: ^0.6.0               # stable per-device ID used for device binding
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
