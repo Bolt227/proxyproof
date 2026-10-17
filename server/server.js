@@ -4,7 +4,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite'); // built into Node 22.13+; no native build needed
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
@@ -15,8 +15,8 @@ const ORGANISER_CODE = process.env.ORGANISER_CODE || 'ORG123'; // invite code ne
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@proxyproof.local';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
-const db = new Database(process.env.DB_FILE || path.join(__dirname, 'proxyproof.db'));
-db.pragma('journal_mode = WAL');
+const db = new DatabaseSync(process.env.DB_FILE || path.join(__dirname, 'proxyproof.db'));
+db.exec('PRAGMA journal_mode = WAL');
 db.exec(`
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,7 +133,7 @@ app.post('/api/auth/login', (req, res) => {
   if (!u || !bcrypt.compareSync(password || '', u.password_hash))
     return res.status(401).json({ error: 'Wrong email or password' });
   if (u.role === 'student' && u.device_id !== deviceId) {
-    const pending = db.prepare("SELECT 1 FROM device_requests WHERE user_id=? AND new_device_id=? AND status='pending'").get(u.id, deviceId);
+    const pending = db.prepare("SELECT 1 FROM device_requests WHERE user_id=? AND new_device_id=? AND status='pending'").get(u.id, deviceId || '');
     if (!pending && deviceId)
       db.prepare('INSERT INTO device_requests(user_id,new_device_id,created_at) VALUES(?,?,?)').run(u.id, deviceId, now());
     return res.status(403).json({
