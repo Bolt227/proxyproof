@@ -1,0 +1,66 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate the Android project around our lib/ and pubspec.yaml
+        working-directory: app
+        run: |
+          mkdir -p /tmp/bak && cp -r lib /tmp/bak/lib && cp pubspec.yaml /tmp/bak/pubspec.yaml
+          flutter create --project-name proxyproof --org com.proxyproof --platforms=android .
+          rm -rf lib test && cp -r /tmp/bak/lib lib && cp /tmp/bak/pubspec.yaml pubspec.yaml
+
+      - name: Patch manifest permissions and minSdk
+        working-directory: app
+        run: |
+          python3 - <<'PY'
+          import re, glob
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          perms = '''
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+              <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
+              <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"/>
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+              <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
+          '''
+          s = s.replace('<application', perms + '<application', 1)
+          s = s.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
+          open(p, 'w').write(s)
+          for g in glob.glob('android/app/build.gradle*'):
+              t = open(g).read()
+              t = t.replace('flutter.minSdkVersion', '23')
+              open(g, 'w').write(t)
+          PY
+
+      - run: flutter pub get
+        working-directory: app
+
+      - run: flutter build apk --release
+        working-directory: app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxyproof-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
